@@ -16,6 +16,8 @@ Std deviation:  7.961595929837183
 - Train AD: `python train.py --model_config ad_dr`
 - Train RAD: `python train.py --model_config rad_dr`
 - Optional run suffix: `python train.py --model_config rad_dr --run_name exp1`
+- Multi-GPU (example 2 GPUs): `accelerate launch --multi_gpu --num_processes 2 train.py --model_config rad_dr`
+- Mixed precision: `--mixed_precision fp16` or `--mixed_precision bf16`
 - RAD uses `RADDataset` (variable context length) with:
   - `rad_min_context_length`
   - `rad_max_context_length`

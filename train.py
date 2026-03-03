@@ -7,6 +7,7 @@ import shutil
 import argparse
 
 from accelerate import Accelerator
+from accelerate.utils import set_seed
 
 import yaml
 import torch
@@ -31,6 +32,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--model_config', type=str, default='ad_dr', help='Model config name in config/model (without .yaml)')
     parser.add_argument('--run_name', type=str, default='', help='Optional suffix to avoid run directory collisions')
+    parser.add_argument('--mixed_precision', type=str, default='fp32', choices=['fp32', 'fp16', 'bf16'], help='Mixed precision mode')
     args = parser.parse_args()
     
     config = get_config('./config/env/darkroom.yaml')
@@ -59,16 +61,28 @@ if __name__ == '__main__':
         exit(0)        
 
     config['traj_dir'] = './datasets'
-    config['mixed_precision'] = 'fp32'
+    config['mixed_precision'] = args.mixed_precision
+    set_seed(config.get('seed', 42))
 
-    os.makedirs(log_dir, exist_ok=True)
-    writer = SummaryWriter(log_dir, flush_secs=15)
-    with open(config_save_path, 'w') as f:
-        yaml.dump(config, f)
+    accelerator = Accelerator(
+        mixed_precision='no' if config['mixed_precision'] == 'fp32' else config['mixed_precision'],
+        gradient_accumulation_steps=config.get('gradient_accumulation_steps', 1),
+    )
+    is_main = accelerator.is_main_process
 
-    accelerator = Accelerator(mixed_precision='no')
+    if is_main:
+        os.makedirs(log_dir, exist_ok=True)
+        writer = SummaryWriter(log_dir, flush_secs=15)
+        with open(config_save_path, 'w') as f:
+            yaml.dump(config, f)
+    else:
+        writer = None
+
+    accelerator.wait_for_everyone()
     config['device'] = accelerator.device
-    print('Using Device: ', config['device'])
+    if is_main:
+        print('Using Device: ', config['device'])
+        print('Number of processes: ', accelerator.num_processes)
 
     model_name = config['model']
     model = MODEL[model_name](config)
@@ -99,30 +113,34 @@ if __name__ == '__main__':
     ckpt_paths = sorted(glob(path.join(config['log_dir'], 'ckpt-*.pt')))
     if len(ckpt_paths) > 0:
         ckpt_path = ckpt_paths[-1]
-        ckpt = torch.load(ckpt_path)
+        ckpt = torch.load(ckpt_path, map_location='cpu')
         model.load_state_dict(ckpt['model'])
         optimizer.load_state_dict(ckpt['optimizer'])
         lr_sched.load_state_dict(ckpt['lr_sched'])
-        step = 0
-        print(f'Checkpoint loaded from {ckpt_path}')
+        step = ckpt['step']
+        if is_main:
+            print(f'Checkpoint loaded from {ckpt_path}')
 
-    env_name = config['env']
-    train_env_args, test_env_args = SAMPLE_ENVIRONMENT[env_name](config)
-    train_env_args = train_env_args[:10]
-    test_env_args = test_env_args[:10]
-    env_args = train_env_args + test_env_args    
+    envs = None
+    if is_main:
+        env_name = config['env']
+        train_env_args, test_env_args = SAMPLE_ENVIRONMENT[env_name](config)
+        train_env_args = train_env_args[:10]
+        test_env_args = test_env_args[:10]
+        env_args = train_env_args + test_env_args
 
-    if env_name == "darkroom":
-        envs = SubprocVecEnv([make_env(config, goal=arg) for arg in env_args])
-    else:
-        raise NotImplementedError('Environment not supported')
+        if env_name == "darkroom":
+            envs = SubprocVecEnv([make_env(config, goal=arg) for arg in env_args])
+        else:
+            raise NotImplementedError('Environment not supported')
     
     model, optimizer, train_dataloader, lr_sched = accelerator.prepare(model, optimizer, train_dataloader, lr_sched)
 
-    start_time = datetime.now()
-    print(f'Trainig started at {start_time}')
+    if is_main:
+        start_time = datetime.now()
+        print(f'Trainig started at {start_time}')
 
-    with tqdm(total=config['train_timesteps'], position=0, leave=True, disable=False) as pbar:
+    with tqdm(total=config['train_timesteps'], position=0, leave=True, disable=not is_main) as pbar:
         pbar.update(step)
 
         while True:
@@ -145,7 +163,7 @@ if __name__ == '__main__':
 
             pbar.set_postfix(loss=loss.item())
 
-            if step % config['summary_interval'] == 0:
+            if is_main and step % config['summary_interval'] == 0:
                 writer.add_scalar('train/loss', loss.item(), step)
                 writer.add_scalar('train/loss_action', output['loss_action'], step)
                 writer.add_scalar('train/loss_action_per_state', output['loss_action'], step)
@@ -159,7 +177,7 @@ if __name__ == '__main__':
 
 
             # Eval
-            if step % config['eval_interval'] == 0:
+            if is_main and step % config['eval_interval'] == 0:
                 torch.cuda.empty_cache()
                 model.eval()
                 eval_start_time = datetime.now()
@@ -203,18 +221,19 @@ if __name__ == '__main__':
             pbar.update(1)
 
             # LOGGING
-            if step % config['ckpt_interval'] == 0:
+            if is_main and step % config['ckpt_interval'] == 0:
                 # Remove old checkpoints
                 ckpt_paths = sorted(glob(path.join(config['log_dir'], 'ckpt-*.pt')))
                 for ckpt_path in ckpt_paths:
                     os.remove(ckpt_path)
 
                 new_ckpt_path = path.join(config['log_dir'], f'ckpt-{step}.pt')
+                unwrapped_model = accelerator.unwrap_model(model)
 
                 torch.save({
                     'step': step,
                     'config': config,
-                    'model': model.state_dict(),
+                    'model': unwrapped_model.state_dict(),
                     'optimizer': optimizer.state_dict(),
                     'lr_sched': lr_sched.state_dict(),
                 }, new_ckpt_path)
@@ -223,10 +242,12 @@ if __name__ == '__main__':
             if step >= config['train_timesteps']:
                 break
 
-    writer.flush()
-    envs.close()
+    if is_main:
+        writer.flush()
+        if envs is not None:
+            envs.close()
 
-    end_time = datetime.now()
-    print()
-    print(f'Training ended at {end_time}')
-    print(f'Elapsed time: {end_time - start_time}')
+        end_time = datetime.now()
+        print()
+        print(f'Training ended at {end_time}')
+        print(f'Elapsed time: {end_time - start_time}')
