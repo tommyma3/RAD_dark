@@ -1,0 +1,28 @@
+# Algorithm_Distillation
+Implementation of algorithm distillation on darkroom environments
+## Original Paper
+https://arxiv.org/abs/2210.14215
+
+## Results (after 50000 training timesteps)
+Evaluation goals:  [array([4, 2]), array([5, 6]), array([6, 8]), array([7, 2]), array([3, 6]), array([0, 5]), array([5, 8]), array([5, 4])]  
+Mean reward per environment: [17.062 17.102 14.094  0.022 16.1   14.434  6.82   0.49 ]  
+Overall mean reward:  10.7655  
+Std deviation:  7.961595929837183  
+
+## RAD (Compressed AD with s/a/r tokens)
+
+- AD config: `config/model/ad_dr.yaml`
+- RAD config: `config/model/rad_dr.yaml`
+- Train AD: `python train.py --model_config ad_dr`
+- Train RAD: `python train.py --model_config rad_dr`
+- Optional run suffix: `python train.py --model_config rad_dr --run_name exp1`
+
+### Figures
+Training Loss:  
+![training_loss](./figs/training_loss.png)
+
+Testing Loss:
+![testing_loss](./figs/testing_loss.png)
+
+Learning Rate Schedule
+![lr_schedule](./figs/lr_schedule.png)

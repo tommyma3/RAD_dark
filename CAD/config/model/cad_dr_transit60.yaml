@@ -1,0 +1,14 @@
+# CAD config for n_transit ablation: n_transit=60 (baseline)
+include: config/model/cad_dr.yaml
+
+# Fixed compression tokens
+n_compress_tokens: 16
+
+# Variable: n_transit=60 (same as base config)
+# Available space after compression: 60 - 16 - 1 = 43 tokens
+# Compression triggers every ~43 new transitions
+n_transit: 60
+
+# Use base config settings for length categories
+min_context_length: 20
+max_context_length: 1000

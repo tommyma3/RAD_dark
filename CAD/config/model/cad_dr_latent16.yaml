@@ -1,0 +1,7 @@
+include: config/model/cad_dr.yaml
+
+# Ablation: n_compress_tokens = 16 (baseline - same as cad_dr.yaml)
+# n_transit remains at 60 (same context window)
+# Available space after compression: 60 - 16 - 1 = 43 tokens
+
+n_compress_tokens: 16
