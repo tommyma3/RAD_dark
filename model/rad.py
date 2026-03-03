@@ -219,35 +219,95 @@ class RAD(nn.Module):
         states = x["states"].to(self.device)
         actions = x["actions"].to(self.device)
         rewards = x["rewards"].to(self.device)
+        context_lengths = x.get("context_lengths", None)
 
-        context_tokens = self._build_context_tokens(states, actions, rewards)
-        query_token = self._build_query_token(query_states)
+        # Fast path for fixed-length contexts (AD-style batches).
+        if context_lengths is None:
+            context_tokens = self._build_context_tokens(states, actions, rewards)
+            query_token = self._build_query_token(query_states)
 
-        transformer_output, compression_info = self._forward_with_compression(
-            context_tokens=context_tokens, query_token=query_token
-        )
+            transformer_output, compression_info = self._forward_with_compression(
+                context_tokens=context_tokens, query_token=query_token
+            )
 
-        logits, visible_transitions = self._select_action_positions(
-            transformer_output=transformer_output,
-            visible_context_tokens=compression_info["visible_context_tokens"],
-            has_latent_prefix=compression_info["has_latent_prefix"],
-        )
+            logits, visible_transitions = self._select_action_positions(
+                transformer_output=transformer_output,
+                visible_context_tokens=compression_info["visible_context_tokens"],
+                has_latent_prefix=compression_info["has_latent_prefix"],
+            )
 
-        start_idx = actions.shape[1] - visible_transitions
-        action_targets = actions[:, start_idx:]
-        target_actions_seq = torch.cat([action_targets, target_actions.unsqueeze(1)], dim=1)
+            start_idx = actions.shape[1] - visible_transitions
+            action_targets = actions[:, start_idx:]
+            target_actions_seq = torch.cat([action_targets, target_actions.unsqueeze(1)], dim=1)
 
-        loss_action = self.loss_fn(
-            logits.reshape(-1, logits.size(-1)),
-            target_actions_seq.reshape(-1),
-        )
-        acc_action = (logits.argmax(dim=-1) == target_actions_seq).float().mean()
+            loss_action = self.loss_fn(
+                logits.reshape(-1, logits.size(-1)),
+                target_actions_seq.reshape(-1),
+            )
+            acc_action = (logits.argmax(dim=-1) == target_actions_seq).float().mean()
+
+            return {
+                "loss_action": loss_action,
+                "acc_action": acc_action,
+                "loss_total": loss_action,
+                "num_compressions": compression_info["num_compressions"],
+                "attentions": None,
+            }
+
+        # Variable-length RAD batches (padded + context_lengths).
+        context_lengths = context_lengths.to(self.device)
+        logits_flat = []
+        targets_flat = []
+        n_correct = 0
+        n_total = 0
+        compression_counts = []
+
+        for i in range(states.shape[0]):
+            ctx_len = int(context_lengths[i].item())
+
+            states_i = states[i:i + 1, :ctx_len]
+            actions_i = actions[i:i + 1, :ctx_len]
+            rewards_i = rewards[i:i + 1, :ctx_len]
+            query_i = query_states[i:i + 1]
+            target_action_i = target_actions[i:i + 1]
+
+            context_tokens_i = self._build_context_tokens(states_i, actions_i, rewards_i)
+            query_token_i = self._build_query_token(query_i)
+
+            transformer_output_i, compression_info_i = self._forward_with_compression(
+                context_tokens=context_tokens_i, query_token=query_token_i
+            )
+
+            logits_i, visible_transitions_i = self._select_action_positions(
+                transformer_output=transformer_output_i,
+                visible_context_tokens=compression_info_i["visible_context_tokens"],
+                has_latent_prefix=compression_info_i["has_latent_prefix"],
+            )
+
+            start_idx = actions_i.shape[1] - visible_transitions_i
+            action_targets_i = actions_i[:, start_idx:]
+            target_actions_seq_i = torch.cat([action_targets_i, target_action_i.unsqueeze(1)], dim=1)
+
+            pred_i = logits_i.argmax(dim=-1)
+            n_correct += (pred_i == target_actions_seq_i).sum().item()
+            n_total += target_actions_seq_i.numel()
+
+            logits_flat.append(logits_i.reshape(-1, logits_i.size(-1)))
+            targets_flat.append(target_actions_seq_i.reshape(-1))
+            compression_counts.append(compression_info_i["num_compressions"])
+
+        logits_flat = torch.cat(logits_flat, dim=0)
+        targets_flat = torch.cat(targets_flat, dim=0)
+
+        loss_action = self.loss_fn(logits_flat, targets_flat)
+        acc_action = torch.tensor(n_correct / max(n_total, 1), device=self.device, dtype=torch.float)
+        avg_num_compressions = float(np.mean(compression_counts)) if compression_counts else 0.0
 
         return {
             "loss_action": loss_action,
             "acc_action": acc_action,
             "loss_total": loss_action,
-            "num_compressions": compression_info["num_compressions"],
+            "num_compressions": avg_num_compressions,
             "attentions": None,
         }
 

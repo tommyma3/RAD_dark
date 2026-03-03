@@ -45,8 +45,46 @@ def ad_collate_fn(batch, grid_size):
         
     return res
 
+
+def rad_collate_fn(batch, grid_size):
+    batch_size = len(batch)
+    max_context_len = max(item['states'].shape[0] for item in batch)
+    dim_state = batch[0]['states'].shape[1]
+
+    states = np.zeros((batch_size, max_context_len, dim_state), dtype=np.float32)
+    actions = np.zeros((batch_size, max_context_len), dtype=np.int64)
+    rewards = np.zeros((batch_size, max_context_len), dtype=np.float32)
+    next_states = np.zeros((batch_size, max_context_len, dim_state), dtype=np.float32)
+    context_lengths = np.zeros((batch_size,), dtype=np.int64)
+
+    query_states = []
+    target_actions = []
+
+    for i, item in enumerate(batch):
+        ctx_len = item['states'].shape[0]
+        states[i, :ctx_len] = item['states']
+        actions[i, :ctx_len] = item['actions']
+        rewards[i, :ctx_len] = item['rewards']
+        next_states[i, :ctx_len] = item['next_states']
+        context_lengths[i] = ctx_len
+        query_states.append(item['query_states'])
+        target_actions.append(item['target_actions'])
+
+    res = {}
+    res['query_states'] = torch.tensor(np.array(query_states), requires_grad=False, dtype=torch.float)
+    res['target_actions'] = torch.tensor(np.array(target_actions), requires_grad=False, dtype=torch.long)
+    res['states'] = torch.tensor(states, requires_grad=False, dtype=torch.float)
+    res['actions'] = torch.tensor(actions, requires_grad=False, dtype=torch.long)
+    res['rewards'] = torch.tensor(rewards, requires_grad=False, dtype=torch.float)
+    res['next_states'] = torch.tensor(next_states, requires_grad=False, dtype=torch.float)
+    res['context_lengths'] = torch.tensor(context_lengths, requires_grad=False, dtype=torch.long)
+    return res
+
 def get_data_loader(dataset, batch_size, config, shuffle=True):
-    collate_fn = partial(ad_collate_fn, grid_size=config['grid_size'])
+    if config.get('model') == 'RAD':
+        collate_fn = partial(rad_collate_fn, grid_size=config['grid_size'])
+    else:
+        collate_fn = partial(ad_collate_fn, grid_size=config['grid_size'])
     return DataLoader(dataset, batch_size=batch_size, shuffle=shuffle, collate_fn=collate_fn, num_workers=config['num_workers'], persistent_workers=True)
 
 def log_in_context(values: np.ndarray, max_reward: int, episode_length: int, tag: str, title: str, xlabel: str, ylabel: str, step: int, success=None, writer=None) -> None:

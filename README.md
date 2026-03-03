@@ -16,6 +16,10 @@ Std deviation:  7.961595929837183
 - Train AD: `python train.py --model_config ad_dr`
 - Train RAD: `python train.py --model_config rad_dr`
 - Optional run suffix: `python train.py --model_config rad_dr --run_name exp1`
+- RAD uses `RADDataset` (variable context length) with:
+  - `rad_min_context_length`
+  - `rad_max_context_length`
+  - `rad_length_distribution` (`short/medium/long`)
 
 ### Figures
 Training Loss:  

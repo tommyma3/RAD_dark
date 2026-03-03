@@ -3,7 +3,7 @@ include: config/model/ad_base.yaml
 model: RAD
 
 # AD backbone
-tf_n_embd: 32
+tf_n_embd: 64
 tf_n_layer: 4
 tf_n_head: 4
 tf_dropout: 0.1
@@ -15,16 +15,25 @@ tf_n_inner: 128
 n_transit: 80
 
 # RAD sequence budget in token space.
-# Full AD token length is 3 * (n_transit - 1) + 1.
-# Setting this lower than full length forces compression during training.
-rad_max_seq_length: 160
+# AD full token window with n_transit=80 is:
+#   3 * (n_transit - 1) + 1 = 238 tokens
+# Set RAD to ~1/4 of AD window (238 / 4 ~= 59.5).
+rad_max_seq_length: 60
 
 # Compression
-n_compress_tokens: 24
+n_compress_tokens: 12
 compress_n_layers: 2
 compress_n_heads: 4
 max_gradient_rounds: 2
 max_compressions: null
+
+# RAD training dataset (variable-length contexts for recursive compression)
+rad_min_context_length: 12
+rad_max_context_length: 240
+rad_length_distribution:
+  short: 0.25   # mostly <= base capacity (little/no compression)
+  medium: 0.35  # around first compression regime
+  long: 0.40    # repeated/recursive compression
 
 # training
 lr: 0.01

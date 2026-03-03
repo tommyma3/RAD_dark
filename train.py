@@ -13,7 +13,7 @@ import torch
 from torch.optim import AdamW
 from torch.utils.tensorboard import SummaryWriter
 
-from dataset import ADDataset
+from dataset import ADDataset, RADDataset
 from env import SAMPLE_ENVIRONMENT
 from model import MODEL
 from utils import get_config, get_data_loader, log_in_context, next_dataloader
@@ -76,7 +76,10 @@ if __name__ == '__main__':
     load_start_time = datetime.now()
     print(f'Data loading started at {load_start_time}')
 
-    train_dataset = ADDataset(config, config['traj_dir'], 'train', config['train_n_stream'], config['train_source_timesteps'])
+    if config['model'] == 'RAD':
+        train_dataset = RADDataset(config, config['traj_dir'], 'train', config['train_n_stream'], config['train_source_timesteps'])
+    else:
+        train_dataset = ADDataset(config, config['traj_dir'], 'train', config['train_n_stream'], config['train_source_timesteps'])
     test_dataset = ADDataset(config, config['traj_dir'], 'test', 1, config['train_source_timesteps'])
 
     train_dataloader = get_data_loader(train_dataset, batch_size=config['train_batch_size'], config=config, shuffle=True)
