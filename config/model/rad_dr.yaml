@@ -31,11 +31,19 @@ max_compressions: null
 # RAD training dataset (variable-length contexts for recursive compression)
 rad_min_context_length: 12
 rad_max_context_length: 240
-rad_context_length_step: 8
+rad_context_length_step: 16
 rad_length_distribution:
-  short: 0.25   # mostly <= base capacity (little/no compression)
-  medium: 0.35  # around first compression regime
-  long: 0.40    # repeated/recursive compression
+  short: 0.35   # mostly <= base capacity (little/no compression)
+  medium: 0.40  # around first compression regime
+  long: 0.25    # repeated/recursive compression
+
+# Dataloader performance
+pin_memory: true
+prefetch_factor: 6
+persistent_workers: true
+
+# DDP performance (RAD now keeps all params in graph via zero-weight touches)
+ddp_find_unused_parameters: false
 
 # training
 lr: 0.01

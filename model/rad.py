@@ -75,6 +75,7 @@ class RAD(nn.Module):
             dim_feedforward=tf_n_inner,
             dropout=tf_dropout,
         )
+        self._compression_params = tuple(self.compression_transformer.parameters())
         self.latent_type_embedding = nn.Parameter(torch.zeros(1, 1, tf_n_embd))
         nn.init.trunc_normal_(self.latent_type_embedding, std=0.02)
 
@@ -246,11 +247,12 @@ class RAD(nn.Module):
                 target_actions_seq.reshape(-1),
             )
             acc_action = (logits.argmax(dim=-1) == target_actions_seq).float().mean()
+            loss_total = self._build_total_loss(loss_action)
 
             return {
                 "loss_action": loss_action,
                 "acc_action": acc_action,
-                "loss_total": loss_action,
+                "loss_total": loss_total,
                 "num_compressions": compression_info["num_compressions"],
                 "attentions": None,
             }
@@ -307,14 +309,25 @@ class RAD(nn.Module):
         loss_action = self.loss_fn(logits_flat, targets_flat)
         acc_action = (logits_flat.argmax(dim=-1) == targets_flat).float().mean()
         avg_num_compressions = float(compression_sum / max(n_samples, 1))
+        loss_total = self._build_total_loss(loss_action)
 
         return {
             "loss_action": loss_action,
             "acc_action": acc_action,
-            "loss_total": loss_action,
+            "loss_total": loss_total,
             "num_compressions": avg_num_compressions,
             "attentions": None,
         }
+
+    def _build_total_loss(self, loss_action):
+        """
+        Touch compression parameters with zero-weight terms so DDP can run with
+        find_unused_parameters=False even on no-compression batches.
+        """
+        zero = self.latent_type_embedding.reshape(-1)[0] * 0.0
+        for p in self._compression_params:
+            zero = zero + p.reshape(-1)[0] * 0.0
+        return loss_action + zero
 
     def evaluate_in_context(self, vec_env, eval_timesteps, beam_k=0, sample=True, return_attentions=False):
         outputs = {

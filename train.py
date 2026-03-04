@@ -65,7 +65,7 @@ if __name__ == '__main__':
     set_seed(config.get('seed', 42))
 
     ddp_kwargs = DistributedDataParallelKwargs(
-        find_unused_parameters=(config.get('model') == 'RAD')
+        find_unused_parameters=bool(config.get('ddp_find_unused_parameters', False))
     )
     accelerator = Accelerator(
         mixed_precision='no' if config['mixed_precision'] == 'fp32' else config['mixed_precision'],

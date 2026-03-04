@@ -85,7 +85,21 @@ def get_data_loader(dataset, batch_size, config, shuffle=True):
         collate_fn = partial(rad_collate_fn, grid_size=config['grid_size'])
     else:
         collate_fn = partial(ad_collate_fn, grid_size=config['grid_size'])
-    return DataLoader(dataset, batch_size=batch_size, shuffle=shuffle, collate_fn=collate_fn, num_workers=config['num_workers'], persistent_workers=True)
+
+    num_workers = int(config.get('num_workers', 0))
+    loader_kwargs = {
+        'batch_size': batch_size,
+        'shuffle': shuffle,
+        'collate_fn': collate_fn,
+        'num_workers': num_workers,
+        'pin_memory': bool(config.get('pin_memory', torch.cuda.is_available())),
+    }
+
+    if num_workers > 0:
+        loader_kwargs['persistent_workers'] = bool(config.get('persistent_workers', True))
+        loader_kwargs['prefetch_factor'] = int(config.get('prefetch_factor', 4))
+
+    return DataLoader(dataset, **loader_kwargs)
 
 def log_in_context(values: np.ndarray, max_reward: int, episode_length: int, tag: str, title: str, xlabel: str, ylabel: str, step: int, success=None, writer=None) -> None:
     steps = np.arange(1, len(values[0])+1) * episode_length
