@@ -7,7 +7,7 @@ import shutil
 import argparse
 
 from accelerate import Accelerator
-from accelerate.utils import set_seed
+from accelerate.utils import set_seed, DistributedDataParallelKwargs
 
 import yaml
 import torch
@@ -64,9 +64,13 @@ if __name__ == '__main__':
     config['mixed_precision'] = args.mixed_precision
     set_seed(config.get('seed', 42))
 
+    ddp_kwargs = DistributedDataParallelKwargs(
+        find_unused_parameters=(config.get('model') == 'RAD')
+    )
     accelerator = Accelerator(
         mixed_precision='no' if config['mixed_precision'] == 'fp32' else config['mixed_precision'],
         gradient_accumulation_steps=config.get('gradient_accumulation_steps', 1),
+        kwargs_handlers=[ddp_kwargs],
     )
     is_main = accelerator.is_main_process
 
@@ -88,7 +92,8 @@ if __name__ == '__main__':
     model = MODEL[model_name](config)
 
     load_start_time = datetime.now()
-    print(f'Data loading started at {load_start_time}')
+    if is_main:
+        print(f'Data loading started at {load_start_time}')
 
     if config['model'] == 'RAD':
         train_dataset = RADDataset(config, config['traj_dir'], 'train', config['train_n_stream'], config['train_source_timesteps'])
@@ -102,9 +107,10 @@ if __name__ == '__main__':
     test_dataloader = get_data_loader(test_dataset, batch_size=config['test_batch_size'], config=config, shuffle=False)
     
     load_end_time = datetime.now()
-    print()
-    print(f'Data loading ended at {load_end_time}')
-    print(f'Elapsed time: {load_end_time - load_start_time}')
+    if is_main:
+        print()
+        print(f'Data loading ended at {load_end_time}')
+        print(f'Elapsed time: {load_end_time - load_start_time}')
 
     optimizer = AdamW(model.parameters(), lr = config['lr'], betas=(config['beta1'], config['beta2']), weight_decay=config['weight_decay'])
     lr_sched = get_cosine_schedule_with_warmup(optimizer, config['num_warmup_steps'], config['train_timesteps'])
