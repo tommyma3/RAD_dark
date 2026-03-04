@@ -85,6 +85,8 @@ if __name__ == '__main__':
         torch.backends.cuda.matmul.allow_tf32 = allow_tf32
         torch.backends.cudnn.allow_tf32 = allow_tf32
         torch.backends.cudnn.benchmark = bool(config.get('cudnn_benchmark', True))
+        if config.get('matmul_precision_high', True):
+            torch.set_float32_matmul_precision('high')
 
     if args.mixed_precision == 'auto':
         accelerator_mp = None
@@ -123,6 +125,13 @@ if __name__ == '__main__':
 
     model_name = config['model']
     model = MODEL[model_name](config)
+    if bool(config.get('torch_compile', False)) and hasattr(torch, 'compile'):
+        model = torch.compile(
+            model,
+            mode=config.get('torch_compile_mode', 'reduce-overhead'),
+            fullgraph=bool(config.get('torch_compile_fullgraph', False)),
+            dynamic=bool(config.get('torch_compile_dynamic', True)),
+        )
 
     load_start_time = datetime.now()
     if is_main:
@@ -145,9 +154,29 @@ if __name__ == '__main__':
         print(f'Data loading ended at {load_end_time}')
         print(f'Elapsed time: {load_end_time - load_start_time}')
 
-    optimizer = AdamW(model.parameters(), lr = config['lr'], betas=(config['beta1'], config['beta2']), weight_decay=config['weight_decay'])
+    optimizer_kwargs = {}
+    if torch.cuda.is_available() and bool(config.get('fused_adamw', True)):
+        optimizer_kwargs['fused'] = True
+
+    try:
+        optimizer = AdamW(
+            model.parameters(),
+            lr=config['lr'],
+            betas=(config['beta1'], config['beta2']),
+            weight_decay=config['weight_decay'],
+            **optimizer_kwargs,
+        )
+    except TypeError:
+        # Older torch versions may not support fused AdamW.
+        optimizer = AdamW(
+            model.parameters(),
+            lr=config['lr'],
+            betas=(config['beta1'], config['beta2']),
+            weight_decay=config['weight_decay'],
+        )
     lr_sched = get_cosine_schedule_with_warmup(optimizer, config['num_warmup_steps'], config['train_timesteps'])
     step = 0
+    max_grad_norm = float(config.get('max_grad_norm', 1.0))
 
     ckpt_paths = sorted(glob(path.join(config['log_dir'], 'ckpt-*.pt')))
     if len(ckpt_paths) > 0:
@@ -194,7 +223,8 @@ if __name__ == '__main__':
 
             optimizer.zero_grad(set_to_none=True)
             accelerator.backward(loss)
-            accelerator.clip_grad_norm_(model.parameters(), 1)
+            if max_grad_norm > 0:
+                accelerator.clip_grad_norm_(model.parameters(), max_grad_norm)
             optimizer.step()
 
             if not accelerator.optimizer_step_was_skipped:

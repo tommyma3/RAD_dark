@@ -11,7 +11,8 @@ import itertools
 
 
 def map_dark_states(states, grid_size):
-    return torch.sum(states * torch.tensor((grid_size, 1), device=states.device, requires_grad=False), dim=-1)
+    # Avoid per-call tensor allocation in hot path.
+    return states[..., 0] * grid_size + states[..., 1]
 
 
 def map_dark_states_inverse(index, grid_size):
