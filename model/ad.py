@@ -39,6 +39,10 @@ class AD(torch.nn.Module):
         )
         gpt2_cfg._attn_implementation = 'eager'
         self.transformer_model = GPT2Model(gpt2_cfg)
+        # We always pass inputs_embeds, so GPT2 token embedding table is unused.
+        # Freeze it to avoid DDP unused-parameter errors.
+        if hasattr(self.transformer_model, 'wte') and hasattr(self.transformer_model.wte, 'weight'):
+            self.transformer_model.wte.weight.requires_grad_(False)
 
         self.embed_state = nn.Embedding(config['grid_size'] * config['grid_size'], tf_n_embd)
         self.embed_action = nn.Embedding(config['num_actions'], tf_n_embd)
