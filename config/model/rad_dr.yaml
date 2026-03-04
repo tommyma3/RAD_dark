@@ -49,7 +49,7 @@ matmul_precision_high: true
 pbar_update_interval: 20
 fused_adamw: true
 max_grad_norm: 0.0
-torch_compile: true
+torch_compile: false
 torch_compile_mode: reduce-overhead
 torch_compile_dynamic: true
 
