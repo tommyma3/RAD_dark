@@ -5,6 +5,14 @@ from modulefinder import ModuleFinder
 from glob import glob
 import shutil
 import argparse
+import warnings
+
+warnings.filterwarnings(
+    "ignore",
+    message=r"functools\.partial will be a method descriptor in future Python versions; wrap it in enum\.member\(\) if you want to preserve the old behavior",
+    category=FutureWarning,
+    module=r"torch\.distributed\.algorithms\.ddp_comm_hooks\.__init__",
+)
 
 from accelerate import Accelerator
 from accelerate.utils import set_seed, DistributedDataParallelKwargs
