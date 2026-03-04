@@ -32,7 +32,13 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--model_config', type=str, default='ad_dr', help='Model config name in config/model (without .yaml)')
     parser.add_argument('--run_name', type=str, default='', help='Optional suffix to avoid run directory collisions')
-    parser.add_argument('--mixed_precision', type=str, default='fp32', choices=['fp32', 'fp16', 'bf16'], help='Mixed precision mode')
+    parser.add_argument(
+        '--mixed_precision',
+        type=str,
+        default='auto',
+        choices=['auto', 'fp32', 'fp16', 'bf16'],
+        help='Mixed precision mode (auto = follow accelerate config)',
+    )
     args = parser.parse_args()
     
     config = get_config('./config/env/darkroom.yaml')
@@ -61,18 +67,25 @@ if __name__ == '__main__':
         exit(0)        
 
     config['traj_dir'] = './datasets'
-    config['mixed_precision'] = args.mixed_precision
     set_seed(config.get('seed', 42))
+
+    if args.mixed_precision == 'auto':
+        accelerator_mp = None
+    elif args.mixed_precision == 'fp32':
+        accelerator_mp = 'no'
+    else:
+        accelerator_mp = args.mixed_precision
 
     ddp_kwargs = DistributedDataParallelKwargs(
         find_unused_parameters=bool(config.get('ddp_find_unused_parameters', False))
     )
     accelerator = Accelerator(
-        mixed_precision='no' if config['mixed_precision'] == 'fp32' else config['mixed_precision'],
+        mixed_precision=accelerator_mp,
         gradient_accumulation_steps=config.get('gradient_accumulation_steps', 1),
         kwargs_handlers=[ddp_kwargs],
     )
     is_main = accelerator.is_main_process
+    config['mixed_precision'] = 'fp32' if accelerator.mixed_precision == 'no' else accelerator.mixed_precision
 
     if is_main:
         os.makedirs(log_dir, exist_ok=True)
