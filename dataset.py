@@ -159,6 +159,7 @@ class RADDataset(Dataset):
             {'short': 0.25, 'medium': 0.35, 'long': 0.40},
         )
         self._validate_distribution(self.length_distribution)
+        self.context_length_step = max(1, int(config.get('rad_context_length_step', 8)))
 
     def _validate_distribution(self, distribution):
         total = sum(distribution.values())
@@ -190,10 +191,21 @@ class RADDataset(Dataset):
             cumulative += prob
             if draw <= cumulative:
                 low, high = ranges.get(category, ranges['medium'])
-                return random.randint(low, high)
+                sampled = random.randint(low, high)
+                return self._quantize_context_length(sampled)
 
         # Fallback
-        return random.randint(self.min_context_length, self.max_context_length)
+        sampled = random.randint(self.min_context_length, self.max_context_length)
+        return self._quantize_context_length(sampled)
+
+    def _quantize_context_length(self, context_length):
+        step = self.context_length_step
+        quantized = (context_length // step) * step
+        if quantized < self.min_context_length:
+            quantized = self.min_context_length
+        if quantized > self.max_context_length:
+            quantized = self.max_context_length
+        return int(quantized)
 
     def __getitem__(self, i):
         history_idx = i % self.n_histories

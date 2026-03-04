@@ -9,6 +9,7 @@ tf_n_head: 4
 tf_dropout: 0.1
 tf_attn_dropout: 0.1
 tf_n_inner: 128
+tf_attn_impl: sdpa
 
 # Data context (same semantics as AD):
 # context transitions = n_transit - 1
@@ -30,6 +31,7 @@ max_compressions: null
 # RAD training dataset (variable-length contexts for recursive compression)
 rad_min_context_length: 12
 rad_max_context_length: 240
+rad_context_length_step: 8
 rad_length_distribution:
   short: 0.25   # mostly <= base capacity (little/no compression)
   medium: 0.35  # around first compression regime

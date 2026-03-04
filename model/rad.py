@@ -38,6 +38,7 @@ class RAD(nn.Module):
         tf_n_inner = config.get("tf_n_inner", config.get("tf_dim_feedforward", tf_n_embd * 4))
         tf_dropout = config.get("tf_dropout", 0.1)
         tf_attn_dropout = config.get("tf_attn_dropout", 0.1)
+        tf_attn_impl = config.get("tf_attn_impl", "sdpa")
 
         # AD transformer
         gpt2_cfg = GPT2Config(
@@ -51,7 +52,7 @@ class RAD(nn.Module):
             attn_pdrop=tf_attn_dropout,
             use_cache=False,
         )
-        gpt2_cfg._attn_implementation = "eager"
+        gpt2_cfg._attn_implementation = tf_attn_impl
         self.transformer_model = GPT2Model(gpt2_cfg)
 
         self.embed_state = nn.Embedding(config["grid_size"] * config["grid_size"], tf_n_embd)
@@ -255,53 +256,57 @@ class RAD(nn.Module):
             }
 
         # Variable-length RAD batches (padded + context_lengths).
+        # To avoid slow per-sample forward passes, process samples in groups
+        # that share the same context length.
         context_lengths = context_lengths.to(self.device)
         logits_flat = []
         targets_flat = []
-        n_correct = 0
-        n_total = 0
-        compression_counts = []
+        compression_sum = 0.0
+        n_samples = 0
 
-        for i in range(states.shape[0]):
-            ctx_len = int(context_lengths[i].item())
+        unique_ctx_lengths = torch.unique(context_lengths, sorted=True)
+        for ctx_len_t in unique_ctx_lengths:
+            ctx_len = int(ctx_len_t.item())
+            group_idx = (context_lengths == ctx_len_t).nonzero(as_tuple=False).squeeze(1)
+            group_size = int(group_idx.numel())
+            if group_size == 0:
+                continue
 
-            states_i = states[i:i + 1, :ctx_len]
-            actions_i = actions[i:i + 1, :ctx_len]
-            rewards_i = rewards[i:i + 1, :ctx_len]
-            query_i = query_states[i:i + 1]
-            target_action_i = target_actions[i:i + 1]
+            states_g = states.index_select(0, group_idx)[:, :ctx_len]
+            actions_g = actions.index_select(0, group_idx)[:, :ctx_len]
+            rewards_g = rewards.index_select(0, group_idx)[:, :ctx_len]
+            query_g = query_states.index_select(0, group_idx)
+            target_action_g = target_actions.index_select(0, group_idx)
 
-            context_tokens_i = self._build_context_tokens(states_i, actions_i, rewards_i)
-            query_token_i = self._build_query_token(query_i)
+            context_tokens_g = self._build_context_tokens(states_g, actions_g, rewards_g)
+            query_token_g = self._build_query_token(query_g)
 
-            transformer_output_i, compression_info_i = self._forward_with_compression(
-                context_tokens=context_tokens_i, query_token=query_token_i
+            transformer_output_g, compression_info_g = self._forward_with_compression(
+                context_tokens=context_tokens_g, query_token=query_token_g
             )
 
-            logits_i, visible_transitions_i = self._select_action_positions(
-                transformer_output=transformer_output_i,
-                visible_context_tokens=compression_info_i["visible_context_tokens"],
-                has_latent_prefix=compression_info_i["has_latent_prefix"],
+            logits_g, visible_transitions_g = self._select_action_positions(
+                transformer_output=transformer_output_g,
+                visible_context_tokens=compression_info_g["visible_context_tokens"],
+                has_latent_prefix=compression_info_g["has_latent_prefix"],
             )
 
-            start_idx = actions_i.shape[1] - visible_transitions_i
-            action_targets_i = actions_i[:, start_idx:]
-            target_actions_seq_i = torch.cat([action_targets_i, target_action_i.unsqueeze(1)], dim=1)
+            start_idx = actions_g.shape[1] - visible_transitions_g
+            action_targets_g = actions_g[:, start_idx:]
+            target_actions_seq_g = torch.cat([action_targets_g, target_action_g.unsqueeze(1)], dim=1)
 
-            pred_i = logits_i.argmax(dim=-1)
-            n_correct += (pred_i == target_actions_seq_i).sum().item()
-            n_total += target_actions_seq_i.numel()
+            logits_flat.append(logits_g.reshape(-1, logits_g.size(-1)))
+            targets_flat.append(target_actions_seq_g.reshape(-1))
 
-            logits_flat.append(logits_i.reshape(-1, logits_i.size(-1)))
-            targets_flat.append(target_actions_seq_i.reshape(-1))
-            compression_counts.append(compression_info_i["num_compressions"])
+            compression_sum += compression_info_g["num_compressions"] * group_size
+            n_samples += group_size
 
         logits_flat = torch.cat(logits_flat, dim=0)
         targets_flat = torch.cat(targets_flat, dim=0)
 
         loss_action = self.loss_fn(logits_flat, targets_flat)
-        acc_action = torch.tensor(n_correct / max(n_total, 1), device=self.device, dtype=torch.float)
-        avg_num_compressions = float(np.mean(compression_counts)) if compression_counts else 0.0
+        acc_action = (logits_flat.argmax(dim=-1) == targets_flat).float().mean()
+        avg_num_compressions = float(compression_sum / max(n_samples, 1))
 
         return {
             "loss_action": loss_action,
