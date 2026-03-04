@@ -36,6 +36,8 @@ from env import make_env
 
 if __name__ == '__main__':
     multiprocessing.set_start_method('spawn', force=True)
+    local_rank = int(os.environ.get("LOCAL_RANK", "0"))
+    is_primary_rank = (local_rank == 0)
 
     parser = argparse.ArgumentParser()
     parser.add_argument('--model_config', type=str, default='ad_dr', help='Model config name in config/model (without .yaml)')
@@ -71,7 +73,8 @@ if __name__ == '__main__':
         config_exists = False
 
     if config_exists:
-        print(f'WARNING: {log_dir} already exists. Skipping...')
+        if is_primary_rank:
+            print(f'WARNING: {log_dir} already exists. Skipping...')
         exit(0)        
 
     config['traj_dir'] = './datasets'
@@ -93,6 +96,9 @@ if __name__ == '__main__':
         kwargs_handlers=[ddp_kwargs],
     )
     is_main = accelerator.is_main_process
+    if not is_main:
+        # Keep worker ranks quiet; rank0 still shows warnings/logs.
+        warnings.filterwarnings("ignore")
     config['mixed_precision'] = 'fp32' if accelerator.mixed_precision == 'no' else accelerator.mixed_precision
 
     if is_main:
