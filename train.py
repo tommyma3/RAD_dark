@@ -80,6 +80,12 @@ if __name__ == '__main__':
     config['traj_dir'] = './datasets'
     set_seed(config.get('seed', 42))
 
+    if torch.cuda.is_available():
+        allow_tf32 = bool(config.get('allow_tf32', True))
+        torch.backends.cuda.matmul.allow_tf32 = allow_tf32
+        torch.backends.cudnn.allow_tf32 = allow_tf32
+        torch.backends.cudnn.benchmark = bool(config.get('cudnn_benchmark', True))
+
     if args.mixed_precision == 'auto':
         accelerator_mp = None
     elif args.mixed_precision == 'fp32':
@@ -186,7 +192,7 @@ if __name__ == '__main__':
             
             loss = output.get('loss_total', output['loss_action'])
 
-            optimizer.zero_grad()
+            optimizer.zero_grad(set_to_none=True)
             accelerator.backward(loss)
             accelerator.clip_grad_norm_(model.parameters(), 1)
             optimizer.step()
@@ -194,7 +200,8 @@ if __name__ == '__main__':
             if not accelerator.optimizer_step_was_skipped:
                 lr_sched.step()
 
-            pbar.set_postfix(loss=loss.item())
+            if step % max(1, int(config.get('pbar_update_interval', 20))) == 0:
+                pbar.set_postfix(loss=loss.item())
 
             if is_main and step % config['summary_interval'] == 0:
                 writer.add_scalar('train/loss', loss.item(), step)

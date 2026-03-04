@@ -25,13 +25,14 @@ rad_max_seq_length: 60
 n_compress_tokens: 12
 compress_n_layers: 2
 compress_n_heads: 4
-max_gradient_rounds: 2
+max_gradient_rounds: 999
 max_compressions: null
 
 # RAD training dataset (variable-length contexts for recursive compression)
 rad_min_context_length: 12
-rad_max_context_length: 240
+rad_max_context_length: 640
 rad_context_length_step: 16
+rad_forward_context_bucket: 64
 random_timestep_slice: true
 rad_length_distribution:
   short: 0.35   # mostly <= base capacity (little/no compression)
@@ -42,13 +43,16 @@ rad_length_distribution:
 pin_memory: true
 prefetch_factor: 6
 persistent_workers: true
+allow_tf32: true
+cudnn_benchmark: true
+pbar_update_interval: 20
 
 # DDP performance (RAD now keeps all params in graph via zero-weight touches)
 ddp_find_unused_parameters: false
 
 # training
 lr: 0.0003
-train_batch_size: 512
+train_batch_size: 2048
 test_batch_size: 2048
 train_source_timesteps: 1000
 train_timesteps: 50000

@@ -26,6 +26,7 @@ class RAD(nn.Module):
         self.tokens_per_transition = 3
         self.full_ad_seq_length = self.tokens_per_transition * self.context_len + 1
         self.max_seq_length = config.get("rad_max_seq_length", self.full_ad_seq_length)
+        self.forward_context_bucket = max(1, int(config.get("rad_forward_context_bucket", 1)))
         self.mixed_precision = config["mixed_precision"]
         self.grid_size = config["grid_size"]
 
@@ -106,6 +107,11 @@ class RAD(nn.Module):
         action_tokens = self.embed_action(actions.to(torch.long))
         reward_tokens = self.embed_reward(rewards.unsqueeze(-1).to(torch.float))
 
+        batch_size = state_tokens.size(0)
+        context_tokens = torch.stack([state_tokens, action_tokens, reward_tokens], dim=2)
+        return context_tokens.reshape(batch_size, -1, context_tokens.size(-1))
+
+    def _pack_sar_tokens(self, state_tokens, action_tokens, reward_tokens):
         batch_size = state_tokens.size(0)
         context_tokens = torch.stack([state_tokens, action_tokens, reward_tokens], dim=2)
         return context_tokens.reshape(batch_size, -1, context_tokens.size(-1))
@@ -270,6 +276,21 @@ class RAD(nn.Module):
         # To avoid slow per-sample forward passes, process samples in groups
         # that share the same context length.
         context_lengths = context_lengths.to(self.device)
+        if self.forward_context_bucket > 1:
+            bucket = self.forward_context_bucket
+            context_lengths = torch.where(
+                context_lengths < bucket,
+                context_lengths,
+                (context_lengths // bucket) * bucket,
+            )
+
+        # Precompute token embeddings once for the padded batch, then slice per-group.
+        state_ids_all = map_dark_states(states.to(torch.long), self.grid_size)
+        state_tokens_all = self.embed_state(state_ids_all)
+        action_tokens_all = self.embed_action(actions.to(torch.long))
+        reward_tokens_all = self.embed_reward(rewards.unsqueeze(-1).to(torch.float))
+        query_tokens_all = self._build_query_token(query_states)
+
         logits_flat = []
         targets_flat = []
         compression_sum = 0.0
@@ -283,14 +304,17 @@ class RAD(nn.Module):
             if group_size == 0:
                 continue
 
-            states_g = states.index_select(0, group_idx)[:, :ctx_len]
-            actions_g = actions.index_select(0, group_idx)[:, :ctx_len]
-            rewards_g = rewards.index_select(0, group_idx)[:, :ctx_len]
-            query_g = query_states.index_select(0, group_idx)
+            state_tokens_g = state_tokens_all.index_select(0, group_idx)[:, :ctx_len]
+            action_tokens_g = action_tokens_all.index_select(0, group_idx)[:, :ctx_len]
+            reward_tokens_g = reward_tokens_all.index_select(0, group_idx)[:, :ctx_len]
+            query_token_g = query_tokens_all.index_select(0, group_idx)
             target_action_g = target_actions.index_select(0, group_idx)
 
-            context_tokens_g = self._build_context_tokens(states_g, actions_g, rewards_g)
-            query_token_g = self._build_query_token(query_g)
+            context_tokens_g = self._pack_sar_tokens(
+                state_tokens=state_tokens_g,
+                action_tokens=action_tokens_g,
+                reward_tokens=reward_tokens_g,
+            )
 
             transformer_output_g, compression_info_g = self._forward_with_compression(
                 context_tokens=context_tokens_g, query_token=query_token_g
@@ -302,7 +326,8 @@ class RAD(nn.Module):
                 has_latent_prefix=compression_info_g["has_latent_prefix"],
             )
 
-            start_idx = actions_g.shape[1] - visible_transitions_g
+            actions_g = actions.index_select(0, group_idx)[:, :ctx_len]
+            start_idx = ctx_len - visible_transitions_g
             action_targets_g = actions_g[:, start_idx:]
             target_actions_seq_g = torch.cat([action_targets_g, target_action_g.unsqueeze(1)], dim=1)
 
