@@ -32,6 +32,7 @@ max_compressions: null
 rad_min_context_length: 12
 rad_max_context_length: 240
 rad_context_length_step: 16
+random_timestep_slice: true
 rad_length_distribution:
   short: 0.35   # mostly <= base capacity (little/no compression)
   medium: 0.40  # around first compression regime
@@ -46,11 +47,11 @@ persistent_workers: true
 ddp_find_unused_parameters: false
 
 # training
-lr: 0.01
+lr: 0.0003
 train_batch_size: 512
 test_batch_size: 2048
 train_source_timesteps: 1000
 train_timesteps: 50000
-num_warmup_steps: 0
+num_warmup_steps: 1000
 
 num_workers: 4

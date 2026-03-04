@@ -6,12 +6,73 @@ import random
 from einops import rearrange, repeat
 
 
+def _load_env_streams(group, n_stream, source_timesteps, random_timestep_slice, rng):
+    states = group['states'][()].transpose(1, 0, 2)
+    actions = group['actions'][()].transpose(1, 0)
+    rewards = group['rewards'][()].transpose(1, 0)
+    next_states = group['next_states'][()].transpose(1, 0, 2)
+
+    if n_stream is not None:
+        states = states[:n_stream]
+        actions = actions[:n_stream]
+        rewards = rewards[:n_stream]
+        next_states = next_states[:n_stream]
+
+    if source_timesteps is None:
+        return states, actions, rewards, next_states
+
+    source_timesteps = int(source_timesteps)
+    if source_timesteps <= 0:
+        raise ValueError(f"source_timesteps must be positive, got {source_timesteps}")
+
+    total_timesteps = states.shape[1]
+    if total_timesteps <= source_timesteps:
+        return (
+            states[:, :source_timesteps],
+            actions[:, :source_timesteps],
+            rewards[:, :source_timesteps],
+            next_states[:, :source_timesteps],
+        )
+
+    if not random_timestep_slice:
+        return (
+            states[:, :source_timesteps],
+            actions[:, :source_timesteps],
+            rewards[:, :source_timesteps],
+            next_states[:, :source_timesteps],
+        )
+
+    max_start = total_timesteps - source_timesteps
+    starts = rng.integers(0, max_start + 1, size=states.shape[0])
+
+    states_slice = np.stack(
+        [states[i, st:st + source_timesteps] for i, st in enumerate(starts)],
+        axis=0,
+    )
+    actions_slice = np.stack(
+        [actions[i, st:st + source_timesteps] for i, st in enumerate(starts)],
+        axis=0,
+    )
+    rewards_slice = np.stack(
+        [rewards[i, st:st + source_timesteps] for i, st in enumerate(starts)],
+        axis=0,
+    )
+    next_states_slice = np.stack(
+        [next_states[i, st:st + source_timesteps] for i, st in enumerate(starts)],
+        axis=0,
+    )
+    return states_slice, actions_slice, rewards_slice, next_states_slice
+
+
 class ADDataset(Dataset):
     def __init__(self, config, traj_dir, mode='train', n_stream=None, source_timesteps=None):
         self.config = config
         self.env = config['env']
         self.n_transit = config['n_transit']
         self.dynamics = config['dynamics']
+        self.random_timestep_slice = bool(config.get('random_timestep_slice', False) and mode == 'train')
+        seed_base = int(config.get('seed', 42))
+        self._slice_rng = np.random.default_rng(seed_base + (0 if mode == 'train' else 10_000))
         
         if self.env == 'darkroom':
             n_total_envs = config['grid_size'] ** 2
@@ -41,10 +102,23 @@ class ADDataset(Dataset):
 
         with h5py.File(f'{traj_dir}/{get_traj_file_name(config)}.hdf5', 'r') as f:
             for i in env_idx:
-                states.append(f[f'{i}']['states'][()].transpose(1, 0, 2)[:n_stream, :source_timesteps])
-                actions.append(f[f'{i}']['actions'][()].transpose(1, 0)[:n_stream, :source_timesteps])
-                rewards.append(f[f'{i}']['rewards'][()].transpose(1, 0)[:n_stream, :source_timesteps])
-                next_states.append(f[f'{i}']['next_states'][()].transpose(1, 0, 2)[:n_stream, :source_timesteps])
+                grp = f.get(f'{i}')
+                if grp is None:
+                    continue
+                s, a, r, ns = _load_env_streams(
+                    group=grp,
+                    n_stream=n_stream,
+                    source_timesteps=source_timesteps,
+                    random_timestep_slice=self.random_timestep_slice,
+                    rng=self._slice_rng,
+                )
+                states.append(s)
+                actions.append(a)
+                rewards.append(r)
+                next_states.append(ns)
+
+        if len(states) == 0:
+            raise ValueError('No trajectories were loaded for ADDataset.')
                     
         self.states = np.concatenate(states, axis=0)
         self.actions = np.concatenate(actions, axis=0)
@@ -89,6 +163,9 @@ class RADDataset(Dataset):
         self.env = config['env']
         self.n_transit = config['n_transit']
         self.dynamics = config['dynamics']
+        self.random_timestep_slice = bool(config.get('random_timestep_slice', True) and mode == 'train')
+        seed_base = int(config.get('seed', 42))
+        self._slice_rng = np.random.default_rng(seed_base + (0 if mode == 'train' else 10_000))
 
         if self.env == 'darkroom':
             n_total_envs = config['grid_size'] ** 2
@@ -117,10 +194,23 @@ class RADDataset(Dataset):
 
         with h5py.File(f'{traj_dir}/{get_traj_file_name(config)}.hdf5', 'r') as f:
             for i in env_idx:
-                states.append(f[f'{i}']['states'][()].transpose(1, 0, 2)[:n_stream, :source_timesteps])
-                actions.append(f[f'{i}']['actions'][()].transpose(1, 0)[:n_stream, :source_timesteps])
-                rewards.append(f[f'{i}']['rewards'][()].transpose(1, 0)[:n_stream, :source_timesteps])
-                next_states.append(f[f'{i}']['next_states'][()].transpose(1, 0, 2)[:n_stream, :source_timesteps])
+                grp = f.get(f'{i}')
+                if grp is None:
+                    continue
+                s, a, r, ns = _load_env_streams(
+                    group=grp,
+                    n_stream=n_stream,
+                    source_timesteps=source_timesteps,
+                    random_timestep_slice=self.random_timestep_slice,
+                    rng=self._slice_rng,
+                )
+                states.append(s)
+                actions.append(a)
+                rewards.append(r)
+                next_states.append(ns)
+
+        if len(states) == 0:
+            raise ValueError('No trajectories were loaded for RADDataset.')
 
         self.states = np.concatenate(states, axis=0)
         self.actions = np.concatenate(actions, axis=0)

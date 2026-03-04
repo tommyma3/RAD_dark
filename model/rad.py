@@ -132,9 +132,16 @@ class RAD(nn.Module):
         tpt = self.tokens_per_transition
         return (n_tokens // tpt) * tpt
 
+    def _compression_chunk_tokens(self, token_capacity, available_tokens):
+        chunk = self._round_down_to_transition_tokens(token_capacity)
+        if chunk <= 0:
+            chunk = self.tokens_per_transition
+        return min(chunk, available_tokens)
+
     def _forward_with_compression(self, context_tokens, query_token):
         context_len = context_tokens.shape[1]
-        available_for_context = self.max_seq_length - 1
+        available_without_latent = self.max_seq_length - 1
+        available_with_latent = self.max_seq_length - self.n_compress_tokens - 1
 
         compression_info = {
             "num_compressions": 0,
@@ -142,7 +149,7 @@ class RAD(nn.Module):
             "visible_context_tokens": context_len,
         }
 
-        if context_len <= available_for_context:
+        if context_len <= available_without_latent:
             full_input = torch.cat([context_tokens, query_token], dim=1)
             out, _ = self.transformer(full_input, return_attentions=False)
             return out, compression_info
@@ -152,35 +159,33 @@ class RAD(nn.Module):
         compression_round = 0
 
         while True:
-            latent_len = self.n_compress_tokens if latent_tokens is not None else 0
-            total_needed = latent_len + remaining_context.shape[1] + 1
-
-            if total_needed <= self.max_seq_length:
+            recent_capacity = available_with_latent if latent_tokens is not None else available_without_latent
+            if remaining_context.shape[1] <= recent_capacity:
                 break
 
             if self.max_compressions is not None and compression_round >= self.max_compressions:
-                keep_len = self.max_seq_length - latent_len - 1
+                keep_len = recent_capacity
                 keep_len = self._round_down_to_transition_tokens(keep_len)
                 keep_len = min(keep_len, remaining_context.shape[1])
                 remaining_context = remaining_context[:, -keep_len:]
                 break
 
             if latent_tokens is None:
-                available_new = self.max_seq_length - 1
-                overflow = remaining_context.shape[1] - available_new
-                required = overflow + self.n_compress_tokens
-                compress_context_len = self._round_up_to_transition_tokens(required)
-                compress_context_len = min(compress_context_len, remaining_context.shape[1])
-                compress_input = remaining_context[:, :compress_context_len]
-                remaining_context = remaining_context[:, compress_context_len:]
+                chunk_len = self._compression_chunk_tokens(
+                    token_capacity=available_without_latent,
+                    available_tokens=remaining_context.shape[1],
+                )
+                compress_context = remaining_context[:, :chunk_len]
+                remaining_context = remaining_context[:, chunk_len:]
+                compress_input = compress_context
             else:
-                available_new = self.max_seq_length - self.n_compress_tokens - 1
-                overflow = remaining_context.shape[1] - available_new
-                compress_context_len = self._round_up_to_transition_tokens(overflow)
-                compress_context_len = min(compress_context_len, remaining_context.shape[1])
-                compress_context = remaining_context[:, :compress_context_len]
+                chunk_len = self._compression_chunk_tokens(
+                    token_capacity=available_with_latent,
+                    available_tokens=remaining_context.shape[1],
+                )
+                compress_context = remaining_context[:, :chunk_len]
                 compress_input = torch.cat([latent_tokens, compress_context], dim=1)
-                remaining_context = remaining_context[:, compress_context_len:]
+                remaining_context = remaining_context[:, chunk_len:]
 
             new_latent = self._compress_sequence(compress_input, compression_round)
 
